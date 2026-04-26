@@ -1,6 +1,6 @@
 # dotfiles
 
-macOS tool configurations.
+macOS and cloud desktop tool configurations.
 
 ## Tools
 
@@ -9,6 +9,10 @@ macOS tool configurations.
 | [AeroSpace](https://github.com/nikitabobko/AeroSpace) | `~/.aerospace.toml` | `aerospace/.aerospace.toml` |
 | [cmux](https://cmux.dev) | `~/.config/cmux/settings.json` | `cmux/settings.json` |
 | [Sketchybar](https://github.com/FelixKratz/SketchyBar) | `~/.config/sketchybar/` | `sketchybar/` |
+| lazygit | `~/.config/lazygit/` | `lazygit/` |
+| yazi | `~/.config/yazi/` | `yazi/` |
+| zellij | `~/.config/zellij/` | `zellij/` |
+| cmux-kiro | `~/.cmux-kiro/` | `cmux-kiro/` |
 
 ## Setup
 

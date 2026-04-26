@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""cmux CLI shim for remote (Linux) hosts. Translates CLI calls to socket protocol."""
+import socket, sys, os, shlex
+
+SOCK = os.environ.get("CMUX_SOCKET_PATH", "/tmp/cmux.sock")
+WS = os.environ.get("CMUX_WORKSPACE_ID", "") or os.environ.get("CMUX_TAB_ID", "")
+SURFACE = os.environ.get("CMUX_SURFACE_ID", "")
+
+def send(msg):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(2)
+    try:
+        s.connect(SOCK)
+        s.sendall((msg + "\n").encode())
+        return s.recv(8192).decode().strip()
+    finally:
+        s.close()
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print("cmux shim — pass-through to cmux socket", file=sys.stderr)
+        sys.exit(1)
+
+    # Map CLI subcommand to socket command (hyphens → underscores)
+    cmd = args[0].replace("-", "_")
+    rest = args[1:]
+
+    # Special cases where CLI syntax differs from socket protocol
+    if cmd == "notify":
+        # CLI: cmux notify --title T --subtitle S --body B [--workspace W]
+        # Socket: notify T|S|B  or  notify_target WS SURFACE T|S|B
+        title = subtitle = body = workspace = surface = ""
+        i = 0
+        while i < len(rest):
+            if rest[i] == "--title" and i + 1 < len(rest):
+                title = rest[i + 1]; i += 2
+            elif rest[i] == "--subtitle" and i + 1 < len(rest):
+                subtitle = rest[i + 1]; i += 2
+            elif rest[i] == "--body" and i + 1 < len(rest):
+                body = rest[i + 1]; i += 2
+            elif rest[i] == "--workspace" and i + 1 < len(rest):
+                workspace = rest[i + 1]; i += 2
+            elif rest[i] == "--surface" and i + 1 < len(rest):
+                surface = rest[i + 1]; i += 2
+            else:
+                i += 1
+        payload = f"{title}|{subtitle}|{body}"
+        if not workspace:
+            workspace = WS
+        if not surface:
+            surface = SURFACE
+        if workspace and surface:
+            msg = f'notify_target {workspace} {surface} {payload}'
+        else:
+            msg = f'notify {payload}'
+    elif cmd == "workspace_action":
+        # CLI: cmux workspace-action --workspace W --action rename --title T
+        # Socket: v2 JSON — no v1 equivalent exists
+        workspace = action = title = ""
+        i = 0
+        while i < len(rest):
+            if rest[i] == "--workspace" and i + 1 < len(rest):
+                workspace = rest[i + 1]; i += 2
+            elif rest[i] == "--action" and i + 1 < len(rest):
+                action = rest[i + 1]; i += 2
+            elif rest[i] == "--title" and i + 1 < len(rest):
+                title = rest[i + 1]; i += 2
+            else:
+                i += 1
+        if action == "rename" and workspace:
+            import json
+            msg = json.dumps({"id": "rename", "method": "workspace.rename", "params": {"workspace_id": workspace, "title": title}})
+        else:
+            msg = f'{cmd} {" ".join(rest)}'
+    elif cmd == "markdown":
+        # markdown open <path> — can't work remotely, warn
+        print("WARN: markdown panels require local files, skipping", file=sys.stderr)
+        sys.exit(0)
+    elif cmd == "browser":
+        # browser open <url> — pass through
+        sub = rest[0].replace("-", "_") if rest else ""
+        if sub == "open" and len(rest) > 1:
+            msg = f'open_browser {rest[1]}'
+        else:
+            msg = f'{cmd} {" ".join(rest)}'
+    elif cmd == "read_screen":
+        # CLI: cmux read-screen [--workspace W] [--surface S]
+        msg = f'{cmd} {" ".join(rest)}'
+    elif cmd == "supports":
+        # Feature check — just say yes for known features
+        print("yes")
+        sys.exit(0)
+    elif cmd == "defaults":
+        # cmux defaults read X — not available remotely
+        sys.exit(1)
+    else:
+        # Generic: command + all remaining args, pass through as-is
+        # Inject --tab from env for workspace-scoped commands (mirrors native CLI defaulting)
+        msg = f'{cmd} {" ".join(rest)}'.strip()
+        if WS and "--tab" not in msg and "--workspace" not in msg:
+            SCOPED = {"set_status", "clear_status", "log", "set_progress", "clear_progress", "read_screen"}
+            if cmd in SCOPED:
+                msg += f' --tab={WS}'
+
+    try:
+        result = send(msg)
+        print(result)
+        sys.exit(0 if result.startswith("OK") or not result.startswith("ERROR") else 1)
+    except Exception as e:
+        print(f"cmux shim error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,101 @@
+#!/bin/bash
+# kmux (formerly kiro-cmux) — CLI for managing kiro-cmux integration
+
+INSTALL_DIR="$HOME/.cmux-kiro"
+VERSION=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "unknown")
+
+BOLD='\033[1m'
+NC='\033[0m'
+CMD_NAME=$(basename "$0")
+
+usage() {
+    echo -e "${BOLD}$CMD_NAME${NC} v$VERSION"
+    echo ""
+    echo "Usage: $CMD_NAME <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  setup                  Install/reinstall hooks and agent configs"
+    echo "  setup --remove-hooks   Remove cmux hooks from agents"
+    echo "  hook [patterns...]     Add cmux hooks to agents (all, or matching glob patterns)"
+    echo "  setup-remote <host>    Set up kiro-cmux on a remote host over SSH"
+    echo "  sync <host>            Rsync local changes to a remote host"
+    echo "  ssh <host>             SSH to remote with cmux socket forwarding"
+    echo "                         --tmux[=name]  Wrap in persistent tmux session"
+    echo "                         --no-tmux      Disable tmux (overrides config)"
+    echo "  et <host>              Eternal Terminal to remote (survives disconnects)"
+    echo "  update                 Check for updates and apply"
+    echo "  doctor                 Diagnose common setup issues"
+    echo "  open <url>             Open internal site in cmux browser with auth"
+    echo "  tour                   Interactive feature tour (run inside cmux)"
+    echo "  test                   Run integration tests"
+    echo ""
+    echo "Options:"
+    echo "  --version, -v     Show version"
+    echo "  --help, -h        Show this help"
+}
+
+case "${1:-}" in
+    --version|-v)
+        echo "$CMD_NAME v$VERSION"
+        ;;
+    --help|-h|"")
+        usage
+        ;;
+    setup)
+        shift
+        exec "$INSTALL_DIR/setup.sh" "$@"
+        ;;
+    hook)
+        shift
+        exec env CMUX_KIRO_INSTALL_DIR="$INSTALL_DIR" "$INSTALL_DIR/lib/hook-agents.sh" "$@"
+        ;;
+    setup-remote|setup_remote)
+        shift
+        if [ -z "$1" ]; then
+            echo "Usage: kiro-cmux setup-remote <hostname>" >&2
+            exit 1
+        fi
+        exec "$INSTALL_DIR/lib/remote/setup-remote-push.sh" "$1"
+        ;;
+    ssh)
+        shift
+        exec "$INSTALL_DIR/bin/cmux-ssh" "$@"
+        ;;
+    et)
+        shift
+        exec "$INSTALL_DIR/bin/cmux-et" "$@"
+        ;;
+    sync)
+        shift
+        HOST="${1:?Usage: $CMD_NAME sync <hostname>}"
+        echo "Syncing v$VERSION to $HOST..."
+        rsync -az --delete --exclude='.git' --exclude='node_modules' "$INSTALL_DIR/" "$HOST:~/.cmux-kiro/" 2>/dev/null
+        ssh -o ConnectTimeout=5 "$HOST" "mkdir -p ~/bin; cp ~/.cmux-kiro/bin/kiro-cmux ~/bin/ 2>/dev/null; chmod +x ~/bin/kiro-cmux 2>/dev/null; ln -sf ~/bin/kiro-cmux ~/bin/kmux 2>/dev/null; cp ~/.cmux-kiro/bin/kiro-acp-client.py ~/bin/ 2>/dev/null; chmod +x ~/bin/kiro-acp-client.py 2>/dev/null; cp ~/.cmux-kiro/lib/remote/cmux-shim ~/bin/cmux 2>/dev/null; cp ~/.cmux-kiro/lib/remote/nc-shim ~/bin/nc 2>/dev/null; chmod +x ~/bin/cmux ~/bin/nc 2>/dev/null" 2>/dev/null
+        echo "✓ Synced v$VERSION to $HOST"
+        ;;
+    update)
+        shift
+        exec "$INSTALL_DIR/update.sh" "$@"
+        ;;
+    doctor)
+        shift
+        exec "$INSTALL_DIR/doctor.sh" "$@"
+        ;;
+    tour)
+        exec bash "$INSTALL_DIR/lib/onboarding.sh"
+        ;;
+    open)
+        shift
+        exec "$INSTALL_DIR/lib/auth-open.sh" "$@"
+        ;;
+    test)
+        shift
+        exec "$INSTALL_DIR/test.sh" "$@"
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac

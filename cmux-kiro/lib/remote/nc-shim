@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""nc shim for remote hosts — handles `nc -w TIMEOUT -U SOCKET_PATH` for unix sockets.
+Reads stdin, sends to socket, prints response."""
+import socket, sys, select
+
+def main():
+    # Parse nc-compatible args: nc [-w timeout] -U /path/to/socket
+    timeout = 2
+    sock_path = None
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        if args[i] == "-w" and i + 1 < len(args):
+            timeout = int(args[i + 1]); i += 2
+        elif args[i] == "-U" and i + 1 < len(args):
+            sock_path = args[i + 1]; i += 2
+        else:
+            i += 1
+
+    if not sock_path:
+        print("nc shim: missing -U <socket>", file=sys.stderr)
+        sys.exit(1)
+
+    data = sys.stdin.read()
+    if not data:
+        sys.exit(0)
+
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(sock_path)
+        s.sendall(data.encode())
+        # Read response
+        chunks = []
+        while True:
+            ready, _, _ = select.select([s], [], [], timeout)
+            if not ready:
+                break
+            chunk = s.recv(8192)
+            if not chunk:
+                break
+            chunks.append(chunk.decode())
+        print("".join(chunks), end="")
+    except Exception as e:
+        print(f"nc shim: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        s.close()
+
+if __name__ == "__main__":
+    main()

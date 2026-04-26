@@ -1,0 +1,86 @@
+{
+  "name": "cmux",
+  "description": "Default agent with steering docs and notification hooks",
+  "prompt": null,
+  "mcpServers": {
+    "builder-mcp": {
+      "command": "__HOME__/.toolbox/bin/builder-mcp",
+      "args": ["--include-tools", "InternalSearch,ReadInternalWebsites,QuipEditor,SkillsTool"],
+      "disabled": false,
+      "env": {}
+    }
+  },
+  "tools": [
+    "use_subagent",
+    "execute_bash",
+    "fs_read",
+    "fs_write",
+    "introspect",
+    "knowledge",
+    "report_issue",
+    "thinking",
+    "use_aws",
+    "web_fetch",
+    "web_search",
+    "@builder-mcp/InternalSearch",
+    "@builder-mcp/QuipEditor",
+    "@builder-mcp/ReadInternalWebsites"
+  ],
+  "toolAliases": {},
+  "allowedTools": [
+    "use_subagent",
+    "execute_bash",
+    "fs_read",
+    "fs_write",
+    "introspect",
+    "knowledge",
+    "report_issue",
+    "thinking",
+    "use_aws",
+    "web_fetch",
+    "web_search",
+    "@builder-mcp/InternalSearch",
+    "@builder-mcp/QuipEditor",
+    "@builder-mcp/ReadInternalWebsites"
+  ],
+  "resources": [
+    "file://.kiro/rules/**/*.md",
+    "file://.kiro/steering/**/*.md",
+    "file://README.md",
+    "file://~/.kiro/steering/**/*.md"
+  ],
+  "hooks": {
+    "agentSpawn": [
+      {
+        "command": "__INSTALL_DIR__/hooks/cmux-notify.sh",
+        "description": "cmux session start, workspace rename, git status"
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "command": "__INSTALL_DIR__/hooks/cmux-notify.sh",
+        "description": "cmux prompt logging, AI workspace title, status update, task/CR detection"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "__INSTALL_DIR__/hooks/cmux-notify.sh",
+        "description": "cmux tool-level status tracking, markdown panel auto-open"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "__INSTALL_DIR__/hooks/cmux-notify.sh",
+        "description": "cmux tool result logging, git status refresh, CR detection"
+      }
+    ],
+    "stop": [
+      {
+        "command": "__INSTALL_DIR__/hooks/cmux-notify.sh",
+        "description": "cmux idle status, notification, git status refresh"
+      }
+    ]
+  },
+  "toolsSettings": {},
+  "useLegacyMcpJson": false
+}

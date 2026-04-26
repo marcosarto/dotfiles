@@ -1,0 +1,7 @@
+{
+  "name": "fast",
+  "description": "Minimal agent for scripting - no MCP, no LSP, fast model",
+  "model": "kimi-k2.5",
+  "tools": ["@builtin"],
+  "mcpServers": {}
+}

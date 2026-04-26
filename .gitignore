@@ -1,2 +1,6 @@
 **/bin/
 .DS_Store
+__pycache__/
+*.pyc
+.last_update_check
+.last_usage_ping

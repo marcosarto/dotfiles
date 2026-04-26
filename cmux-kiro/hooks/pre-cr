@@ -1,0 +1,7 @@
+#!/bin/bash
+# pre-cr — CRUX pre-CR hook for cmux sidebar feedback
+# Installed to ~/.config/cr/hooks/pre-cr by setup.sh
+# Always exits 0 — never blocks CR creation.
+[ -n "$CMUX_SOCKET_PATH" ] && [ -S "$CMUX_SOCKET_PATH" ] || exit 0
+cmux set-status cr "Creating CR..." --icon arrow.triangle.branch --color "#ff9500" >/dev/null 2>&1
+exit 0

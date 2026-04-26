@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# cmux-ssh — SSH to a remote host with cmux socket forwarding and env vars.
+# Optionally wraps the remote shell in a tmux session for persistence.
+# Usage: cmux-ssh <host> [--tmux[=session-name]] [--no-tmux] [ssh-args...]
+set -euo pipefail
+
+[ -f "$HOME/.config/cmux-kiro/config" ] && source "$HOME/.config/cmux-kiro/config"
+
+if [ -z "${1:-}" ]; then
+    echo "Usage: cmux-ssh <host> [--tmux[=session-name]] [--no-tmux] [ssh-args...]" >&2
+    exit 1
+fi
+HOST="$1"
+shift
+
+# Parse --tmux / --no-tmux flags
+USE_TMUX="${CMUX_SSH_TMUX:-false}"
+TMUX_SESSION=""
+SSH_EXTRA_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --tmux)
+            USE_TMUX=true
+            shift ;;
+        --tmux=*)
+            USE_TMUX=true
+            TMUX_SESSION="$(echo "${1#--tmux=}" | tr -cd 'a-zA-Z0-9_-')"
+            shift ;;
+        --no-tmux)
+            USE_TMUX=false; shift ;;
+        *)
+            SSH_EXTRA_ARGS+=("$1"); shift ;;
+    esac
+done
+# Restore extra args (bash 3.2 safe — empty array with set -u)
+if [ ${#SSH_EXTRA_ARGS[@]} -gt 0 ]; then
+    set -- "${SSH_EXTRA_ARGS[@]}"
+else
+    set --
+fi
+
+SOCK="${CMUX_SOCKET_PATH:-/tmp/cmux.sock}"
+
+if [[ ! -S "$SOCK" ]]; then
+    echo "✗ cmux socket not found at $SOCK — are you inside cmux?" >&2
+    exit 1
+fi
+
+REMOTE_SOCK="/tmp/cmux.sock"
+
+# Clean up stale socket, grab hostname, version, terminfo, and tmux status in one SSH call
+REMOTE_INFO=$(ssh -o ConnectTimeout=5 "$HOST" "rm -f $REMOTE_SOCK; echo \$(hostname -s); cat ~/.cmux-kiro/VERSION 2>/dev/null || echo missing; infocmp xterm-ghostty &>/dev/null 2>&1 && echo terminfo_ok || echo terminfo_missing; command -v tmux &>/dev/null && echo tmux_ok || echo tmux_missing" 2>/dev/null)
+REMOTE_HOST=$(echo "$REMOTE_INFO" | sed -n '1p')
+REMOTE_VER=$(echo "$REMOTE_INFO" | sed -n '2p')
+REMOTE_TERMINFO=$(echo "$REMOTE_INFO" | sed -n '3p')
+REMOTE_TMUX=$(echo "$REMOTE_INFO" | sed -n '4p')
+[ -z "$REMOTE_HOST" ] && REMOTE_HOST="$HOST"
+
+if [[ "$USE_TMUX" == "true" && "$REMOTE_TMUX" == "tmux_missing" ]]; then
+    echo "⚠ tmux not found on $REMOTE_HOST — connecting without session persistence"
+    echo "  Install: sudo yum install -y tmux  (or: brew install tmux)"
+    USE_TMUX=false
+fi
+
+# Version check — auto-sync if remote is out of date
+INSTALL_DIR="$HOME/.cmux-kiro"
+LOCAL_VER=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "unknown")
+if [ "$REMOTE_VER" = "missing" ]; then
+    echo "⚠ kiro-cmux not found on $REMOTE_HOST — run: kiro-cmux setup-remote $HOST"
+    exit 1
+elif [ "$LOCAL_VER" != "$REMOTE_VER" ]; then
+    echo "⚠ Version mismatch (local v$LOCAL_VER, remote v$REMOTE_VER) — syncing..."
+    rsync -az --delete --exclude='.git' --exclude='node_modules' "$INSTALL_DIR/" "$HOST:~/.cmux-kiro/" 2>/dev/null
+    ssh -o ConnectTimeout=5 "$HOST" "cp ~/.cmux-kiro/lib/remote/cmux-shim ~/bin/cmux; cp ~/.cmux-kiro/lib/remote/nc-shim ~/bin/nc; chmod +x ~/bin/cmux ~/bin/nc; cp ~/.cmux-kiro/bin/kiro-acp-client.py ~/bin/ 2>/dev/null; chmod +x ~/bin/kiro-acp-client.py 2>/dev/null; cp ~/.cmux-kiro/bin/kiro-cmux ~/bin/ 2>/dev/null; chmod +x ~/bin/kiro-cmux 2>/dev/null; ln -sf ~/bin/kiro-cmux ~/bin/kmux 2>/dev/null" 2>/dev/null
+    echo "✓ Synced v$LOCAL_VER to $REMOTE_HOST"
+fi
+
+# Install ghostty terminfo on remote — fall back to xterm-256color if it fails.
+# Without valid terminfo, cmux's TERM=xterm-ghostty propagates over SSH and causes
+# garbled input (doubled chars, broken backspace) on the remote.
+TERM_OVERRIDE=""
+if [[ "$REMOTE_TERMINFO" != "terminfo_ok" ]]; then
+    # Try to install it
+    TERMINFO_MARKER="/tmp/.cmux-terminfo-installed-${HOST}"
+    if command -v infocmp &>/dev/null && infocmp -x xterm-ghostty &>/dev/null 2>&1; then
+        if infocmp -x xterm-ghostty 2>/dev/null | ssh -o ConnectTimeout=5 "$HOST" "tic -x - 2>/dev/null"; then
+            touch "$TERMINFO_MARKER" 2>/dev/null || true
+        else
+            TERM_OVERRIDE="export TERM=xterm-256color;"
+        fi
+    else
+        TERM_OVERRIDE="export TERM=xterm-256color;"
+    fi
+fi
+
+# Show host pill in sidebar immediately
+cmux set-status host "$REMOTE_HOST" --icon "desktopcomputer" --color "#8e8e93" >/dev/null 2>&1 || true
+
+# Default tmux session name if not explicitly provided.
+if [[ "$USE_TMUX" == "true" && -z "$TMUX_SESSION" ]]; then
+    TMUX_SESSION="kmux"
+fi
+
+# Build env export string for the remote shell
+ENV_EXPORT="export CMUX_SOCKET_PATH=$REMOTE_SOCK"
+for var in CMUX_WORKSPACE_ID CMUX_TAB_ID CMUX_PANEL_ID CMUX_SURFACE_ID; do
+    ENV_EXPORT+=" $var=${!var:-}"
+done
+
+# Build the remote command — optionally wrap in tmux
+if [[ "$USE_TMUX" == "true" ]]; then
+    # set-environment updates tmux session env for new panes on reattach
+    REMOTE_CMD="$TERM_OVERRIDE $ENV_EXPORT;"
+    REMOTE_CMD+=" tmux set-environment -g CMUX_SOCKET_PATH '$REMOTE_SOCK' 2>/dev/null;"
+    for var in CMUX_WORKSPACE_ID CMUX_TAB_ID CMUX_PANEL_ID CMUX_SURFACE_ID; do
+        REMOTE_CMD+=" tmux set-environment -g $var '${!var:-}' 2>/dev/null;"
+    done
+    REMOTE_CMD+=" tmux new-session -A -s '$TMUX_SESSION'"
+    cmux set-status host "$REMOTE_HOST [$TMUX_SESSION]" --icon "desktopcomputer" --color "#8e8e93" >/dev/null 2>&1 || true
+else
+    REMOTE_CMD="$TERM_OVERRIDE $ENV_EXPORT; exec \$SHELL -l"
+fi
+
+ssh -o StreamLocalBindUnlink=yes -R "$REMOTE_SOCK:$SOCK" "$@" "$HOST" -t "$REMOTE_CMD"
+
+# SSH exited — clear the host pill from the sidebar
+cmux clear-status host >/dev/null 2>&1 || true

@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# cmux-et — Connect to a remote host via Eternal Terminal with cmux socket forwarding.
+# Uses ET's reverse tunnel + Python socket bridges to forward the cmux Unix socket
+# over TCP, surviving network disconnections transparently.
+#
+# Usage: cmux-et <host> [et-args...]
+set -euo pipefail
+
+if [ -z "${1:-}" ]; then
+    echo "Usage: cmux-et <host> [et-args...]" >&2
+    exit 1
+fi
+HOST="$1"
+shift
+
+SOCK="${CMUX_SOCKET_PATH:-/tmp/cmux.sock}"
+REMOTE_SOCK="/tmp/cmux.sock"
+INSTALL_DIR="$HOME/.cmux-kiro"
+BRIDGE="$INSTALL_DIR/lib/remote/socket-bridge.py"
+
+if [[ ! -S "$SOCK" ]]; then
+    echo "✗ cmux socket not found at $SOCK — are you inside cmux?" >&2
+    exit 1
+fi
+
+if ! command -v et &>/dev/null; then
+    echo "✗ et (Eternal Terminal) not found. Install: brew install MisterTea/et/et" >&2
+    exit 1
+fi
+
+# --- Preflight: check remote etserver + version ---
+REMOTE_INFO=$(ssh -o ConnectTimeout=5 "$HOST" "
+    command -v etserver >/dev/null 2>&1 && echo etserver_ok || echo etserver_missing
+    echo \$(hostname -s)
+    cat ~/.cmux-kiro/VERSION 2>/dev/null || echo missing
+    infocmp xterm-ghostty &>/dev/null 2>&1 && echo terminfo_ok || echo terminfo_missing
+" 2>/dev/null)
+
+ETSERVER_STATUS=$(echo "$REMOTE_INFO" | sed -n '1p')
+REMOTE_HOST=$(echo "$REMOTE_INFO" | sed -n '2p')
+REMOTE_VER=$(echo "$REMOTE_INFO" | sed -n '3p')
+REMOTE_TERMINFO=$(echo "$REMOTE_INFO" | sed -n '4p')
+[ -z "$REMOTE_HOST" ] && REMOTE_HOST="$HOST"
+
+if [ "$ETSERVER_STATUS" = "etserver_missing" ]; then
+    echo "✗ etserver not found on $REMOTE_HOST" >&2
+    echo "  Install: sudo yum install -y et  (or see https://github.com/MisterTea/EternalTerminal)" >&2
+    exit 1
+fi
+
+# --- Version sync (same as cmux-ssh) ---
+LOCAL_VER=$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo "unknown")
+if [ "$REMOTE_VER" = "missing" ]; then
+    echo "⚠ kiro-cmux not found on $REMOTE_HOST — run: kiro-cmux setup-remote $HOST"
+    exit 1
+elif [ "$LOCAL_VER" != "$REMOTE_VER" ]; then
+    echo "⚠ Version mismatch (local v$LOCAL_VER, remote v$REMOTE_VER) — syncing..."
+    rsync -az --delete --exclude='.git' --exclude='node_modules' "$INSTALL_DIR/" "$HOST:~/.cmux-kiro/" 2>/dev/null
+    ssh -o ConnectTimeout=5 "$HOST" "cp ~/.cmux-kiro/lib/remote/cmux-shim ~/bin/cmux; cp ~/.cmux-kiro/lib/remote/nc-shim ~/bin/nc; chmod +x ~/bin/cmux ~/bin/nc; cp ~/.cmux-kiro/bin/kiro-acp-client.py ~/bin/ 2>/dev/null; chmod +x ~/bin/kiro-acp-client.py 2>/dev/null; cp ~/.cmux-kiro/bin/kiro-cmux ~/bin/ 2>/dev/null; chmod +x ~/bin/kiro-cmux 2>/dev/null; ln -sf ~/bin/kiro-cmux ~/bin/kmux 2>/dev/null" 2>/dev/null
+    echo "✓ Synced v$LOCAL_VER to $REMOTE_HOST"
+fi
+
+# --- Terminfo ---
+TERM_OVERRIDE=""
+if [[ "$REMOTE_TERMINFO" != "terminfo_ok" ]]; then
+    if command -v infocmp &>/dev/null && infocmp -x xterm-ghostty &>/dev/null 2>&1; then
+        infocmp -x xterm-ghostty 2>/dev/null | ssh -o ConnectTimeout=5 "$HOST" "tic -x - 2>/dev/null" || TERM_OVERRIDE="export TERM=xterm-256color;"
+    else
+        TERM_OVERRIDE="export TERM=xterm-256color;"
+    fi
+fi
+
+# --- Pick ephemeral ports ---
+LOCAL_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()')
+REMOTE_PORT=$LOCAL_PORT
+
+# --- Start local bridge: TCP LOCAL_PORT → cmux Unix socket ---
+python3 "$BRIDGE" tcp-to-unix "$LOCAL_PORT" "$SOCK" &
+LOCAL_BRIDGE_PID=$!
+
+cleanup() {
+    kill "$LOCAL_BRIDGE_PID" 2>/dev/null || true
+    # Clean up remote bridge
+    ssh -o ConnectTimeout=3 "$HOST" "pkill -f 'socket-bridge.py unix-to-tcp $REMOTE_SOCK'" 2>/dev/null || true
+    cmux clear-status host >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+# Wait for local bridge to be ready
+sleep 0.2
+
+# --- Sidebar host pill ---
+cmux set-status host "$REMOTE_HOST (ET)" --icon "desktopcomputer" --color "#30d158" >/dev/null 2>&1 || true
+
+# --- Build remote startup command ---
+ENV_EXPORT="export CMUX_SOCKET_PATH=$REMOTE_SOCK"
+ENV_EXPORT+=" CMUX_WORKSPACE_ID=${CMUX_WORKSPACE_ID:-}"
+ENV_EXPORT+=" CMUX_TAB_ID=${CMUX_TAB_ID:-}"
+ENV_EXPORT+=" CMUX_PANEL_ID=${CMUX_PANEL_ID:-}"
+ENV_EXPORT+=" CMUX_SURFACE_ID=${CMUX_SURFACE_ID:-}"
+
+REMOTE_CMD="pkill -f 'socket-bridge.py unix-to-tcp $REMOTE_SOCK' 2>/dev/null; python3 ~/.cmux-kiro/lib/remote/socket-bridge.py unix-to-tcp $REMOTE_SOCK $REMOTE_PORT & sleep 0.3; $TERM_OVERRIDE $ENV_EXPORT; exec \$SHELL -l"
+
+# --- Connect via ET with reverse tunnel ---
+echo "⚡ Connecting to $REMOTE_HOST via Eternal Terminal (port $REMOTE_PORT)..."
+et -r "$REMOTE_PORT:$LOCAL_PORT" -c "$REMOTE_CMD" -e "$@" "$HOST"
